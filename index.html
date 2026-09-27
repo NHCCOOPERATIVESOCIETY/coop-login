@@ -147,6 +147,7 @@ var SESSION_KEY = 'coop_session';
   var nextView = params.get('next') || '';
   var reqId    = params.get('req') || '';
   var signedOut = params.get('signedout') === '1';
+  var failReason = params.get('reason') || '';
 
  var msgEl = document.getElementById('msg');
   var sessionFromRedirect = params.get('session');
@@ -158,8 +159,13 @@ var SESSION_KEY = 'coop_session';
     try { localStorage.setItem(SESSION_KEY, sessionFromRedirect); } catch (e) {}
     window.location.replace(buildTargetUrl(null, sessionFromRedirect));
   } else if (signinFailed) {
-    showMessage('Sign-in failed. Please try again.', true);
-  } else {
+    var reasonText = {
+      'no_token': 'No sign-in credential was received. Please try again.',
+      'token_invalid': 'Your Google sign-in could not be verified — this can happen if the page was open too long. Reloading and trying again should fix it.',
+      'not_registered': 'This Google account is not registered with the society. Ask an official to add it, or sign in with the correct account.'
+    }[failReason] || 'Sign-in failed. Please try again.';
+    showMessage(reasonText, true);
+} else {
     var savedSession = null;
     try { savedSession = localStorage.getItem(SESSION_KEY); } catch (e) {}
     if (savedSession) {
@@ -252,6 +258,15 @@ if (signedOut) {
   }
 
   window.addEventListener('load', startGoogle);
+  var pageLoadedAt = Date.now();
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'visible') {
+    var idleMinutes = (Date.now() - pageLoadedAt) / 60000;
+    if (idleMinutes > 10) {
+      location.reload();
+    }
+  }
+});
 </script>
 </body>
 </html>
