@@ -84,6 +84,18 @@
     padding: 10px 12px;
     border-radius: 4px;
   }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+  .actions button {
+    font: inherit;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 11px 18px;
+    border: 1px solid var(--green);
+    background: var(--green);
+    color: #fff;
+    font-weight: 600;
+  }
+  .actions button.alt { background: #fff; color: var(--green); }
   .help {
     margin: 22px 0 0;
     padding-top: 16px;
@@ -118,6 +130,7 @@
 
     <div id="gbtn"></div>
     <p id="msg" class="msg" role="status" aria-live="polite"></p>
+    <div id="actions" class="actions"></div>
 
     <p class="help">
       <strong>Not registered yet?</strong> Ask a society official to add your email address,
@@ -138,84 +151,158 @@
   // SETTINGS: change these two values only
   // ------------------------------------------------------------------
   var CLIENT_ID = '920703411991-6h6iroq1v3q9v0lurgek8r3vush8hcfa.apps.googleusercontent.com';
-    var EXEC_URL  = 'https://script.google.com/macros/s/AKfycbyJoNnylfZlTfnWwNUTbytF9F3uPfenSapfcpl-bR3w69s7G_OKIhIPVHm3iZaj07Fu/exec'; // the web app link that ends with /exec
+  var EXEC_URL  = 'https://script.google.com/macros/s/AKfycbyJoNnylfZlTfnWwNUTbytF9F3uPfenSapfcpl-bR3w69s7G_OKIhIPVHm3iZaj07Fu/exec'; // the web app link that ends with /exec
   // ------------------------------------------------------------------
 
   var ALLOWED_NEXT = ['home', 'guarantor', 'review', 'loans'];
-var SESSION_KEY = 'coop_session';
-  var params   = new URLSearchParams(window.location.search);
-  var nextView = params.get('next') || '';
-  var reqId    = params.get('req') || '';
+  var SESSION_KEY  = 'coop_session';
+
+  var params    = new URLSearchParams(window.location.search);
+  var nextView  = params.get('next') || '';
+  var reqId     = params.get('req') || '';
   var signedOut = params.get('signedout') === '1';
-  var failReason = params.get('reason') || '';
+  var expired   = params.get('expired') === '1';
 
- var msgEl = document.getElementById('msg');
-  var sessionFromRedirect = params.get('session');
-  var signinFailed = params.get('signinfailed') === '1';
+  var msgEl     = document.getElementById('msg');
+  var gbtnEl    = document.getElementById('gbtn');
+  var actionsEl = document.getElementById('actions');
 
-  if (signedOut) {
-    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
-  } else if (sessionFromRedirect) {
-    try { localStorage.setItem(SESSION_KEY, sessionFromRedirect); } catch (e) {}
-    window.location.replace(buildTargetUrl(null, sessionFromRedirect));
-  } else if (signinFailed) {
-    var reasonText = {
-      'no_token': 'No sign-in credential was received. Please try again.',
-      'token_invalid': 'Your Google sign-in could not be verified — this can happen if the page was open too long. Reloading and trying again should fix it.',
-      'not_registered': 'This Google account is not registered with the society. Ask an official to add it, or sign in with the correct account.'
-    }[failReason] || 'Sign-in failed. Please try again.';
-    showMessage(reasonText, true);
-} else {
-    var savedSession = null;
-    try { savedSession = localStorage.getItem(SESSION_KEY); } catch (e) {}
-    if (savedSession) {
-      window.location.replace(buildTargetUrl(null, savedSession));
-    }
-  }
+  var googleStarted = false;
+  var redirecting   = false;
+  var resumeTries   = 0;
+  var waitingRetry  = null;   // holds the saved token while the "could not reach server" screen is showing
+
+  // ---------- small helpers ----------
   function showMessage(text, isError) {
     msgEl.textContent = text || '';
     msgEl.className = 'msg' + (isError ? ' error' : '');
   }
 
-  function buildTargetUrl(credential, session) {
+  function clearActions() { actionsEl.innerHTML = ''; }
+
+  function addAction(label, handler, alt) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    if (alt) b.className = 'alt';
+    b.onclick = handler;
+    actionsEl.appendChild(b);
+  }
+
+  function getSaved() {
+    try { return localStorage.getItem(SESSION_KEY) || ''; } catch (e) { return ''; }
+  }
+  function saveSession(s) {
+    try { localStorage.setItem(SESSION_KEY, s); return true; } catch (e) { return false; }
+  }
+  function clearSession() {
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  }
+
+  function buildTargetUrl(session) {
     var q = new URLSearchParams();
-    if (session) { q.set('session', session); } else { q.set('idt', credential); }
+    q.set('session', session);
     if (ALLOWED_NEXT.indexOf(nextView) !== -1) q.set('next', nextView);
     if (/^[A-Za-z0-9_-]{1,40}$/.test(reqId)) q.set('req', reqId);
     return EXEC_URL + (EXEC_URL.indexOf('?') === -1 ? '?' : '&') + q.toString();
   }
 
- function handleCredential(response) {
+  // Calls the Apps Script web app and returns parsed JSON.
+  // Rejects on network failure, timeout, or a non-JSON reply (all "temporary" problems).
+  function callServer(query, timeoutMs) {
+    var url = EXEC_URL + (EXEC_URL.indexOf('?') === -1 ? '?' : '&') + query;
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs || 20000) : null;
+    return fetch(url, ctrl ? { signal: ctrl.signal } : undefined)
+      .then(function (res) { return res.json(); })
+      .then(function (data) { if (timer) clearTimeout(timer); return data; },
+            function (err)  { if (timer) clearTimeout(timer); throw err; });
+  }
+
+  // ---------- resume a saved session ----------
+  // Only a clear "expired" answer from the server removes the saved sign-in.
+  // Network trouble (changing Wi-Fi/data, weak signal) keeps it and retries.
+  function resume(saved) {
+    waitingRetry = null;
+    clearActions();
+    gbtnEl.style.display = 'none';
+    showMessage(resumeTries ? 'Reconnecting...' : 'Opening your dashboard...');
+
+    callServer('action=checkSession&session=' + encodeURIComponent(saved), 20000)
+      .then(function (r) {
+        if (r && r.ok) {
+          redirecting = true;
+          window.location.replace(buildTargetUrl(saved));
+          return;
+        }
+        if (r && r.reason === 'expired') {
+          clearSession();
+          showMessage('Your session has ended. Please sign in again.', false);
+          startGoogle();
+          return;
+        }
+        throw new Error('temporary');
+      })
+      .catch(function () {
+        if (redirecting) return;
+        resumeTries++;
+        if (resumeTries < 4) {
+          setTimeout(function () { resume(saved); }, 2000 * resumeTries);
+          return;
+        }
+        showRetry(saved);
+      });
+  }
+
+  function showRetry(saved) {
+    waitingRetry = saved;
+    clearActions();
+    showMessage('We could not reach the server. You are still signed in on this device. Check your internet connection and try again.', true);
+    addAction('Try again', function () { resumeTries = 0; resume(saved); }, false);
+    addAction('Sign in with Google instead', function () { clearActions(); startGoogle(); }, true);
+  }
+
+  // ---------- fresh Google sign-in ----------
+  function handleCredential(response) {
     if (!response || !response.credential) {
       showMessage('Sign-in did not finish. Tap the button to try again.', true);
       return;
     }
-    showMessage('Signed in. Opening your dashboard...');
+    showMessage('Signing you in...');
 
-    var form = document.createElement('form');
-    form.method = 'POST';
-    form.action = EXEC_URL;
+    var q = 'action=createSession&idt=' + encodeURIComponent(response.credential);
+    if (ALLOWED_NEXT.indexOf(nextView) !== -1) q += '&next=' + encodeURIComponent(nextView);
 
-    function field(name, value) {
-      var el = document.createElement('input');
-      el.type = 'hidden'; el.name = name; el.value = value;
-      form.appendChild(el);
-    }
-    field('action', 'createSession');
-    field('idt', response.credential);
-    if (ALLOWED_NEXT.indexOf(nextView) !== -1) field('next', nextView);
-    if (/^[A-Za-z0-9_-]{1,40}$/.test(reqId)) field('req', reqId);
-
-    document.body.appendChild(form);
-    form.submit();
+    callServer(q, 30000)
+      .then(function (r) {
+        if (r && r.ok && r.session) {
+          saveSession(r.session);
+          try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+          redirecting = true;
+          window.location.replace(buildTargetUrl(r.session));
+          return;
+        }
+        var reasons = {
+          'no_token': 'No sign-in credential was received. Please try again.',
+          'token_invalid': 'Your Google sign-in could not be verified. Reload this page and try again.',
+          'not_registered': 'This Google account is not registered with the society. Ask an official to add it, or sign in with the correct account.',
+          'error': 'The server had a problem. Please try again in a moment.'
+        };
+        showMessage(reasons[r && r.reason] || 'Sign-in failed. Please try again.', true);
+      })
+      .catch(function () {
+        showMessage('Could not reach the server. Check your internet connection, then tap the button to try again.', true);
+      });
   }
 
   var attempts = 0;
   function startGoogle() {
-  if (EXEC_URL.indexOf('https://script.google.com/') !== 0) {
-  showMessage('This page is not set up yet: the portal link is missing in index.html.', true);
-  return;
-}
+    if (googleStarted) { gbtnEl.style.display = 'flex'; return; }
+
+    if (EXEC_URL.indexOf('https://script.google.com/') !== 0) {
+      showMessage('This page is not set up yet: the portal link is missing in index.html.', true);
+      return;
+    }
     if (!(window.google && google.accounts && google.accounts.id)) {
       attempts++;
       if (attempts > 60) {
@@ -226,47 +313,77 @@ var SESSION_KEY = 'coop_session';
       return;
     }
 
- google.accounts.id.initialize({
-  client_id: CLIENT_ID,
-  callback: handleCredential,
-  auto_select: false,
-  cancel_on_tap_outside: false,
-  itp_support: true
-});
+    googleStarted = true;
+    gbtnEl.style.display = 'flex';
 
-google.accounts.id.renderButton(document.getElementById('gbtn'), {
-  type: 'standard',
-  theme: 'filled_blue',
-  size: 'large',
-  text: 'signin_with',
-  shape: 'rectangular',
-  width: 300
-});
+    google.accounts.id.initialize({
+      client_id: CLIENT_ID,
+      callback: handleCredential,
+      auto_select: false,
+      cancel_on_tap_outside: false,
+      itp_support: true
+    });
 
-setTimeout(function () {
-  if (!document.getElementById('gbtn').children.length) {
-    showMessage('The Google button did not load. Google may not accept this page address yet. Check Authorized JavaScript origins in Google Cloud.', true);
-  }
-}, 4000);
+    google.accounts.id.renderButton(gbtnEl, {
+      type: 'standard',
+      theme: 'filled_blue',
+      size: 'large',
+      text: 'signin_with',
+      shape: 'rectangular',
+      width: 300
+    });
 
-if (signedOut) {
-  google.accounts.id.disableAutoSelect();
-  showMessage('You have signed out.');
-} else {
-  showMessage('Please click the button above to sign in.');
-}
+    setTimeout(function () {
+      if (!gbtnEl.children.length) {
+        showMessage('The Google button did not load. Google may not accept this page address yet. Check Authorized JavaScript origins in Google Cloud.', true);
+      }
+    }, 4000);
+
+    if (!msgEl.textContent) showMessage('Please click the button above to sign in.');
   }
 
-  window.addEventListener('load', startGoogle);
-  var pageLoadedAt = Date.now();
-document.addEventListener('visibilitychange', function () {
-  if (document.visibilityState === 'visible') {
-    var idleMinutes = (Date.now() - pageLoadedAt) / 60000;
-    if (idleMinutes > 10) {
-      location.reload();
+  // ---------- start ----------
+  function boot() {
+    if (signedOut) {
+      var old = getSaved();
+      clearSession();
+      // Also end the session on the server, so the old token stops working everywhere.
+      if (old) { callServer('action=endSession&session=' + encodeURIComponent(old), 15000).catch(function () {}); }
+      showMessage('You have signed out.');
+      startGoogle();
+      if (window.google && google.accounts && google.accounts.id) { google.accounts.id.disableAutoSelect(); }
+      return;
+    }
+
+    if (expired) {
+      clearSession();
+      showMessage('Your session has ended. Please sign in again.');
+      startGoogle();
+      return;
+    }
+
+    var saved = getSaved();
+    if (saved) {
+      resume(saved);
+    } else {
+      startGoogle();
     }
   }
-});
+
+  window.addEventListener('load', boot);
+
+  // Back online after a network change: retry straight away if we were waiting.
+  window.addEventListener('online', function () {
+    if (waitingRetry && !redirecting) { resumeTries = 0; resume(waitingRetry); }
+  });
+
+  // If the page sat hidden for a long time, start fresh.
+  var hiddenAt = 0;
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+    if (hiddenAt && (Date.now() - hiddenAt) > 10 * 60000 && !redirecting) { location.reload(); }
+    hiddenAt = 0;
+  });
 </script>
 </body>
 </html>
