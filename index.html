@@ -96,6 +96,15 @@
     font-weight: 600;
   }
   .actions button.alt { background: #fff; color: var(--green); }
+  .field { margin-top: 14px; }
+  .field label { display: block; font-size: 14px; margin-bottom: 6px; color: var(--muted); }
+  .field input[type=password], .field input[type=text] {
+    width: 100%; font: inherit; font-size: 16px; padding: 11px 12px;
+    border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink);
+  }
+  .hint { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 10px 0 0; }
+  .showpw { display: block; font-size: 14px; margin-top: 10px; color: var(--muted); }
+  .linkbtn { background: none; border: 0; padding: 0; color: var(--green-dark); text-decoration: underline; font: inherit; cursor: pointer; }
   .help {
     margin: 22px 0 0;
     padding-top: 16px;
@@ -116,12 +125,8 @@
 <header class="band">
   <div class="band-inner">
     <div class="mark" aria-hidden="true">NHC</div>
-    <div class="card-top">
- <img src="https://ibrahimgegeletech.github.io/coop-login/logo.jpeg"
-     alt="<?= societyName ?> logo"
-     style="width:100px;height:100px;object-fit:contain;margin-bottom:10px;border-radius:8px;">
     <div>
-      <h1>NHC CO-OPERATIVE SOCIETY</h1>
+      <h1>NHC Co-operative Society</h1>
       <p>Members and officials portal</p>
     </div>
   </div>
@@ -135,6 +140,7 @@
     <div id="gbtn"></div>
     <p id="msg" class="msg" role="status" aria-live="polite"></p>
     <div id="actions" class="actions"></div>
+    <form id="pwform" class="pwform" style="display:none" autocomplete="on"></form>
 
     <p class="help">
       <strong>Not registered yet?</strong> Ask a society official to add your email address,
@@ -223,6 +229,106 @@
             function (err)  { if (timer) clearTimeout(timer); throw err; });
   }
 
+  // ---------- password screens ----------
+  var pwForm = document.getElementById('pwform');
+
+  // Passwords are sent in the body of a POST, never in a web address.
+  function postServer(obj, timeoutMs) {
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs || 30000) : null;
+    var opts = { method: 'POST', body: JSON.stringify(obj) };
+    if (ctrl) opts.signal = ctrl.signal;
+    return fetch(EXEC_URL, opts)
+      .then(function (res) { return res.json(); })
+      .then(function (data) { if (timer) clearTimeout(timer); return data; },
+            function (err)  { if (timer) clearTimeout(timer); throw err; });
+  }
+
+  function hidePassword() { pwForm.style.display = 'none'; pwForm.innerHTML = ''; }
+
+  function showPasswordScreen(mode, session) {
+    var create = (mode === 'create');
+    gbtnEl.style.display = 'none';
+    clearActions();
+
+    pwForm.innerHTML =
+      '<div class="field"><label for="pw1">' + (create ? 'Create a password' : 'Password') + '</label>' +
+      '<input id="pw1" name="password" type="password" required autocomplete="' + (create ? 'new-password' : 'current-password') + '"></div>' +
+      (create ? '<div class="field"><label for="pw2">Type it again</label>' +
+        '<input id="pw2" name="password2" type="password" required autocomplete="new-password"></div>' +
+        '<p class="hint">At least 8 characters. Do not use your name, phone number or something easy like 12345678.</p>' : '') +
+      '<label class="showpw"><input type="checkbox" id="pwShow"> Show password</label>' +
+      '<div class="actions"><button type="submit" id="pwGo">' + (create ? 'Save password' : 'Continue') + '</button></div>' +
+      (create ? '' : '<p class="hint">Forgot your password? Ask the Secretary to reset it, then sign in with Google again.</p>') +
+      '<p class="hint"><button type="button" class="linkbtn" id="pwOther">Use a different account</button></p>';
+    pwForm.style.display = 'block';
+
+    showMessage(create
+      ? 'Welcome. Create a password to protect your account. You will use it whenever you come back to the portal.'
+      : 'Enter your password to continue.');
+
+    document.getElementById('pwShow').onchange = function () {
+      var t = this.checked ? 'text' : 'password';
+      document.getElementById('pw1').type = t;
+      var p2 = document.getElementById('pw2'); if (p2) p2.type = t;
+    };
+    document.getElementById('pwOther').onclick = function () {
+      window.location.href = window.location.pathname + '?signedout=1';
+    };
+    pwForm.onsubmit = function (ev) { ev.preventDefault(); submitPassword(mode, session); return false; };
+    document.getElementById('pw1').focus();
+  }
+
+  function submitPassword(mode, session) {
+    var create = (mode === 'create');
+    var p1 = document.getElementById('pw1').value;
+    var p2El = document.getElementById('pw2');
+    if (!p1) { showMessage('Please enter your password.', true); return; }
+    if (create) {
+      if (p1.length < 8) { showMessage('Your password must be at least 8 characters.', true); return; }
+      if (!p2El || p1 !== p2El.value) { showMessage('The two passwords do not match.', true); return; }
+    }
+
+    var go = document.getElementById('pwGo');
+    go.disabled = true;
+    showMessage(create ? 'Saving...' : 'Checking...');
+
+    postServer({ action: create ? 'setPassword' : 'unlock', session: session, password: p1 }, 30000)
+      .then(function (r) {
+        if (r && r.ok) {
+          redirecting = true;
+          window.location.replace(buildTargetUrl(session));
+          return;
+        }
+        go.disabled = false;
+        var reason = r && r.reason;
+        if (reason === 'wrong_password') {
+          showMessage('That password is not correct. ' + r.attemptsLeft + ' attempt' + (r.attemptsLeft === 1 ? '' : 's') + ' left.', true);
+          document.getElementById('pw1').value = '';
+          document.getElementById('pw1').focus();
+          return;
+        }
+        if (reason === 'locked_out') {
+          showMessage('Too many wrong attempts. Please try again in ' + r.minutes + ' minute' + (r.minutes === 1 ? '' : 's') + '.', true);
+          return;
+        }
+        if (reason === 'weak') { showMessage(r.message || 'Please choose a stronger password.', true); return; }
+        if (reason === 'already_set') { showPasswordScreen('enter', session); return; }
+        if (reason === 'expired' || reason === 'sign_in_again' || reason === 'setup_required') {
+          hidePassword();
+          clearSession();
+          showMessage('Please sign in with Google again to continue.');
+          startGoogle();
+          return;
+        }
+        showMessage('Something went wrong. Please try again.', true);
+      })
+      .catch(function () {
+        go.disabled = false;
+        showMessage('Could not reach the server. Check your internet connection and try again.', true);
+      });
+  }
+
   // ---------- resume a saved session ----------
   // Only a clear "expired" answer from the server removes the saved sign-in.
   // Network trouble (changing Wi-Fi/data, weak signal) keeps it and retries.
@@ -235,6 +341,15 @@
     callServer('action=checkSession&session=' + encodeURIComponent(saved), 20000)
       .then(function (r) {
         if (r && r.ok) {
+          if (r.passwordRequired && r.locked) {
+            if (!r.setup) { showPasswordScreen('enter', saved); return; }
+            if (r.fresh)  { showPasswordScreen('create', saved); return; }
+            // Saved sign-in exists but no password yet and it is too old to create one safely.
+            clearSession();
+            showMessage('For your security, please sign in with Google once more. You will then create your password.');
+            startGoogle();
+            return;
+          }
           redirecting = true;
           window.location.replace(buildTargetUrl(saved));
           return;
@@ -282,6 +397,10 @@
         if (r && r.ok && r.session) {
           saveSession(r.session);
           try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+          if (r.passwordRequired) {
+            showPasswordScreen(r.setup ? 'create' : 'enter', r.session);
+            return;
+          }
           redirecting = true;
           window.location.replace(buildTargetUrl(r.session));
           return;
