@@ -120,7 +120,7 @@
   :focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
-  <meta name="google-site-verification" content="cljveUtJma0CjiQoV6FgnfIHDiR6no-m4Dz1JzxOa9A" />
+<meta name="google-site-verification" content="cljveUtJma0CjiQoV6FgnfIHDiR6no-m4Dz1JzxOa9A" />
 </head>
 <body>
 
@@ -135,6 +135,18 @@
 </header>
 
 <main>
+  <!-- App Purpose Section for Google Compliance Verification -->
+  <section class="card" style="margin: -40px auto 20px; padding: 20px 24px;">
+    <h2 style="font-size: 18px; margin-bottom: 8px;">About the Portal</h2>
+    <p style="font-size: 14px; line-height: 1.5; color: var(--muted); margin: 0;">
+      The <strong>NHC Co-operative Society System</strong> is a private management utility designed for members and officials of the society. This secure portal allows authorized users to track their financial contributions, view dividend distributions, manage loan balances, and process guarantor approvals. 
+    </p>
+    <p style="font-size: 14px; line-height: 1.5; color: var(--muted); margin: 8px 0 0;">
+      Our application utilizes <strong>Google OAuth login</strong> strictly as a secure identity verification mechanism to match incoming sessions with pre-registered society email profiles.
+    </p>
+  </section>
+
+  <!-- Existing Sign In Card -->
   <section class="card" aria-labelledby="title">
     <h2 id="title">Sign in to your account</h2>
     <p class="lead">Use the Google account you registered with the society.</p>
@@ -151,7 +163,13 @@
   </section>
 </main>
 
-<footer>Keep this page bookmarked. Always open the portal from here.<br><span style="opacity:.6">Sign-in page version 2 (with password)</span></footer>
+
+<footer>
+  Keep this page bookmarked. Always open the portal from here.<br>
+  <span style="opacity:.6">Sign-in page version 2 (with password)</span><br>
+  <a href="privacy.html" style="margin-top: 6px; display: inline-block;">Privacy Policy</a>
+</footer>
+
 <script>
   window.onerror = function (message, source, line) {
     var el = document.getElementById('msg');
